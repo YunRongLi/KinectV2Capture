@@ -4,34 +4,7 @@
 
 #include "KinectV2Capture.h"
 
-int main()
-{
-	KinectV2Capture Cap;
-
-	Cap.CreateCapture();
-
-
-	//std::cin.get();
-	/*char ch = 'w';
-	bool quit = false;*/
-	while (1) {
-		/*std::cin >> ch;
-		switch (ch)
-		{
-		case 'q':
-			Cap.DestoryCapture();
-			quit = true;
-			break;
-		default:
-			break;
-		}*/
-	}
-
-	return 0;
-}
-
-KinectV2Capture::KinectV2Capture() :m_pKinectSensor(nullptr), m_ColorImgValid(false), m_DepthImgValid(false), m_bCamInited(false),
-									m_hMSEvent(NULL)
+KinectV2Capture::KinectV2Capture() :m_pKinectSensor(nullptr), m_bCamInited(false),	m_hMSEvent(NULL)
 {
 	HRESULT hr;
 
@@ -43,10 +16,6 @@ KinectV2Capture::KinectV2Capture() :m_pKinectSensor(nullptr), m_ColorImgValid(fa
 	}
 
 	if (m_pKinectSensor) {
-		if (SUCCEEDED(hr)) {
-			hr = m_pKinectSensor->get_CoordinateMapper(&m_pMapper);
-		}
-
 		hr = m_pKinectSensor->Open();
 
 		if (SUCCEEDED(hr)) {
@@ -58,6 +27,10 @@ KinectV2Capture::KinectV2Capture() :m_pKinectSensor(nullptr), m_ColorImgValid(fa
 
 		if (SUCCEEDED(hr)) {
 			m_pMultiSourceFrameReader->SubscribeMultiSourceFrameArrived(&m_hMSEvent);
+		}
+
+		if (SUCCEEDED(hr)) {
+			hr = m_pKinectSensor->get_CoordinateMapper(&m_pMapper);
 		}
 	}
 
@@ -74,8 +47,7 @@ KinectV2Capture::KinectV2Capture() :m_pKinectSensor(nullptr), m_ColorImgValid(fa
 	m_pColorSpacePoints = new ColorSpacePoint[m_DepthWidth * m_DepthHeight];
 	m_pCameraSpacePoints = new CameraSpacePoint[m_ColorWidth * m_ColorHeight];
 
-	cv::namedWindow("ColorFrame", cv::WINDOW_AUTOSIZE);
-	cv::namedWindow("DepthFrame", cv::WINDOW_AUTOSIZE);
+	m_DepthImg.create(m_DepthHeight, m_DepthWidth, CV_16UC1);
 }
 
 DWORD WINAPI KinectV2Capture::threadGrabImage(LPVOID pParam) {
@@ -97,10 +69,9 @@ void KinectV2Capture::Run() {
 
 	IMultiSourceFrame* pMultiSourceFrame = NULL;
 
-
 	HANDLE handles[] = { reinterpret_cast<HANDLE>(m_hMSEvent) };
 
-	int index;
+	//int index;
 	DWORD result;
 	HRESULT hr;
 
@@ -117,24 +88,15 @@ void KinectV2Capture::Run() {
 
 			pFrameArgs->Release();
 		}
-
-		/*if (m_ColorImgValid) {
-			cv::imshow("ColorFrame", m_ColorImg);
-			std::cout << "Show Color Img " << std::endl;
-		}
-
-		if (m_DepthImgValid) {
-			cv::imshow("DepthFrame", m_DepthImg);
-		}*/
-
-		//int key = cv::waitKey(10);
 	}
 
 	Close();
 }
 
 void KinectV2Capture::Close() {
-	cv::destroyAllWindows();
+	if (!m_Signal_Color.empty()) {
+		m_Signal_Color.disconnect_all_slots();
+	}
 
 	if (m_pColorRGBX) {
 		delete[] m_pColorRGBX;
@@ -252,9 +214,7 @@ void KinectV2Capture::DepthFrameArrived(IDepthFrameReference* pDepthFrameReferen
 	}
 	if (SUCCEEDED(hr)) {
 		hr = pDepthFrame->AccessUnderlyingBuffer(&nDepthBufferSize, &m_pDepthBuffer);
-		cv::Mat img = cv::Mat(m_DepthSize, CV_16UC1, m_pDepthBuffer, cv::Mat::AUTO_STEP);
-		m_DepthImg = img.clone();
-		m_DepthImgValid = true;
+		pDepthFrame->CopyFrameDataToArray(m_DepthSize.area(), reinterpret_cast<UINT16*>(m_DepthImg.data));
 	}
 	pDepthFrameDesciption->Release();
 	pDepthFrameDesciption = NULL;
@@ -299,9 +259,10 @@ void KinectV2Capture::ColorFrameArrived(IColorFrameReference* pColorFrameReferen
 			hr = E_FAIL;
 		}
 		if (SUCCEEDED(hr)) {
-			cv::Mat img = cv::Mat(m_ColorSize, CV_8UC4, pColorBuffer, cv::Mat::AUTO_STEP);
-			m_ColorImg = img.clone();
-			m_ColorImgValid = true;
+			cv::Mat img = cv::Mat(m_ColorSize, CV_8UC4, pColorBuffer, cv::Mat::AUTO_STEP);;
+			boost::shared_ptr<cv::Mat> pMat(new cv::Mat);
+			*pMat = img.clone();
+			m_Signal_Color.operator()(pMat);
 		}
 	}
 	pColorFrameDescription->Release();
@@ -309,3 +270,54 @@ void KinectV2Capture::ColorFrameArrived(IColorFrameReference* pColorFrameReferen
 	pColorFrame->Release();
 	pColorFrame = NULL;
 }
+
+void KinectV2Capture::registerCallback(const ColorImg_Callback& callback) {
+	m_Signal_Color.connect(callback);
+}
+
+bool KinectV2Capture::GetPointCloud(cv::Mat& PointCloud) {
+	HRESULT hr;
+
+	UINT DepthBufferSize = m_DepthSize.area();
+	UINT ColorBufferSize = m_ColorSize.area();
+
+	std::vector<cv::Mat> output(3);
+	output[0] = cv::Mat(m_ColorSize, CV_32F);
+	output[1] = cv::Mat(m_ColorSize, CV_32F);
+	output[2] = cv::Mat(m_ColorSize, CV_32F);
+
+	hr = m_pMapper->MapColorFrameToCameraSpace(DepthBufferSize, reinterpret_cast<UINT16*>(m_DepthImg.data), ColorBufferSize, m_pCameraSpacePoints);
+	
+	if (SUCCEEDED(hr)) {
+		for (int y = 0; y < m_ColorHeight; y++) {
+			for (int x = 0; x < m_ColorWidth; x++) {
+				int index = x + y * m_ColorWidth;
+				CameraSpacePoint &point = m_pCameraSpacePoints[index];
+
+				if (isinf(point.X)) {
+					output[0].at<float>(y, x) = 0;
+					output[1].at<float>(y, x) = 0;
+					output[2].at<float>(y, x) = 0;
+				}
+				else {
+					output[0].at<float>(y, x) = point.X * 100;
+					output[1].at<float>(y, x) = point.Y * 100;
+					output[2].at<float>(y, x) = point.Z * 100;
+				}
+			}
+		}
+
+		cv::merge(output, PointCloud);
+		return true;
+	}
+
+	return false;
+}
+
+cv::Mat KinectV2Capture::GetROIImg(cv::Rect rect) {
+	cv::Mat Img = cv::Mat(m_ColorSize, CV_8UC4, m_pColorRGBX, cv::Mat::AUTO_STEP);
+	cv::Mat roiImg = Img(rect);
+
+	return roiImg;
+}
+

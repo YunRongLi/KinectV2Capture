@@ -4,7 +4,11 @@
 #include <Kinect.h>
 #include <memory>
 
+#include <boost\signals2.hpp>
+
 class KinectV2Capture {
+	typedef void (ColorImg_Callback)(const boost::shared_ptr<cv::Mat> &);
+
 private:
 	IKinectSensor* m_pKinectSensor;
 	IMultiSourceFrameReader* m_pMultiSourceFrameReader;
@@ -12,10 +16,6 @@ private:
 
 	ColorSpacePoint* m_pColorSpacePoints;
 	CameraSpacePoint* m_pCameraSpacePoints;
-	
-	cv::Mat m_DepthImg;
-	cv::Mat m_ColorImg;
-	cv::Mat m_IrImg;
 
 	RGBQUAD* m_pColorRGBX;// Color Frame buf
 	UINT16* m_pDepthBuffer;
@@ -25,13 +25,12 @@ private:
 	static const int m_DepthWidth = 512;
 	static const int m_DepthHeight = 424;
 
+	cv::Mat m_DepthImg;
+
 	cv::Size m_DepthSize;
 	cv::Size m_ColorSize;
 
 	bool m_bCamInited;
-
-	bool m_DepthImgValid;
-	bool m_ColorImgValid;
 
 protected:
 	HANDLE m_heventThreadDone;
@@ -39,6 +38,7 @@ protected:
 	
 	WAITABLE_HANDLE m_hMSEvent;
 
+	boost::signals2::signal<ColorImg_Callback> m_Signal_Color;
 
 	static DWORD WINAPI threadGrabImage(LPVOID);
 
@@ -55,4 +55,8 @@ public:
 	void Close();
 	void DestoryCapture();
 
+	void registerCallback(const ColorImg_Callback& callback);
+
+	bool GetPointCloud(cv::Mat&);
+	cv::Mat GetROIImg(cv::Rect);
 };
